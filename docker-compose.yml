@@ -25,7 +25,7 @@ services:
   # Reason: Reverse proxy for routing domains to services
   # Handles SSL termination and HTTP routing based on domain names
   traefik:
-    image: traefik:v2.10
+    image: traefik:v3.0
     container_name: traefik
     command:
       - "--api.insecure=true"
@@ -317,7 +317,7 @@ services:
   # Reason: Zookeeper for Kafka cluster coordination
   # Required for Kafka broker to manage topics and partitions
   zookeeper:
-    image: confluentinc/cp-zookeeper:7.5.0
+    image: confluentinc/cp-zookeeper:7.6.1
     container_name: zookeeper
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
@@ -329,7 +329,7 @@ services:
   # Reason: Kafka broker for transaction streaming
   # Handles real-time transaction data from producer to consumers
   kafka:
-    image: confluentinc/cp-kafka:7.5.0
+    image: confluentinc/cp-kafka:7.6.1
     container_name: kafka
     depends_on:
       - zookeeper
