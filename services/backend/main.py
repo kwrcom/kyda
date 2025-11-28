@@ -42,19 +42,34 @@ from auth import (
 def get_vault_secrets(max_retries=5, retry_delay=2):
     """
     Retrieve secrets from Vault with retry logic
-    
-    Reason: Vault might not be immediately available during startup,
-    so we retry the connection to ensure secrets are retrieved successfully
+    Supports both Token auth (Dev) and AppRole auth (Prod)
     """
     import time
     
     vault_addr = os.getenv('VAULT_ADDR', 'http://vault:8200')
-    vault_token = os.getenv('VAULT_TOKEN', 'root')
+    # Auth methods
+    vault_token = os.getenv('VAULT_TOKEN')
+    vault_role_id = os.getenv('VAULT_ROLE_ID')
+    vault_secret_id = os.getenv('VAULT_SECRET_ID')
     
     for attempt in range(max_retries):
         try:
             print(f"Attempting to connect to Vault at {vault_addr} (attempt {attempt + 1}/{max_retries})")
-            client = hvac.Client(url=vault_addr, token=vault_token)
+            client = hvac.Client(url=vault_addr)
+            
+            # Authentication Logic
+            if vault_role_id and vault_secret_id:
+                print("Authenticating via AppRole...")
+                client.auth.approle.login(
+                    role_id=vault_role_id,
+                    secret_id=vault_secret_id
+                )
+            elif vault_token:
+                print("Authenticating via Token...")
+                client.token = vault_token
+            else:
+                # Try default token (e.g. root for dev) if nothing specified
+                client.token = 'root'
             
             # Reason: Check if Vault is sealed/accessible
             if not client.is_authenticated():
