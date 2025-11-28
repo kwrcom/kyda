@@ -8,11 +8,19 @@ export default function AlertsPage() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    setLoading(true)
-    axios.get('/api/alerts/')
-      .then(r => setAlerts(r.data.alerts || []))
-      .catch(err => console.error("Failed to fetch alerts", err))
-      .finally(() => setLoading(false))
+    const fetchAlerts = () => {
+      axios.get('/api/alerts/')
+        .then(r => {
+          setAlerts(r.data.alerts || [])
+          setLoading(false)
+        })
+        .catch(err => console.error("Failed to fetch alerts", err))
+    }
+
+    fetchAlerts() // Initial fetch
+    const interval = setInterval(fetchAlerts, 2000) // Poll every 2s
+
+    return () => clearInterval(interval)
   }, [])
 
   const filtered = alerts.filter(a => {
@@ -64,15 +72,15 @@ export default function AlertsPage() {
         {/* Toolbar */}
         <div style={{ padding: '1.5rem', borderBottom: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <h3 style={{ margin: 0, fontSize: '1.125rem' }}>Recent Activity</h3>
-          
+
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <span style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>Filter:</span>
-            <select 
-              value={filter} 
+            <select
+              value={filter}
               onChange={e => setFilter(e.target.value)}
-              style={{ 
-                padding: '0.5rem', 
-                borderRadius: 'var(--radius-md)', 
+              style={{
+                padding: '0.5rem',
+                borderRadius: 'var(--radius-md)',
                 border: '1px solid var(--border-color)',
                 backgroundColor: 'var(--bg-app)',
                 fontSize: '0.875rem'

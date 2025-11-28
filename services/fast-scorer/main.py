@@ -27,7 +27,28 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://airflow-redis:6379/0")
 MODEL_PATH = os.getenv("ONNX_MODEL_PATH", "model.onnx")
 
 redis_client = redis.from_url(REDIS_URL)
-producer = KafkaProducer(bootstrap_servers=KAFKA_SERVERS.split(","), linger_ms=5)
+redis_client = redis.from_url(REDIS_URL)
+
+# Retry logic for Kafka connection
+import time
+max_retries = 10
+retry_delay = 5
+producer = None
+
+for attempt in range(max_retries):
+    try:
+        print(f"Connecting to Kafka (attempt {attempt + 1}/{max_retries})...")
+        producer = KafkaProducer(bootstrap_servers=KAFKA_SERVERS.split(","), linger_ms=5)
+        print("Successfully connected to Kafka")
+        break
+    except Exception as e:
+        print(f"Failed to connect to Kafka: {e}")
+        if attempt < max_retries - 1:
+            time.sleep(retry_delay)
+        else:
+            # Fallback: continue without Kafka (will just log errors on send) or raise
+            print("WARNING: Could not connect to Kafka after multiple attempts. Running in degraded mode.")
+            producer = None
 
 # Load ONNX model if present
 onnx_session = None
