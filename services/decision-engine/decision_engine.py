@@ -87,14 +87,32 @@ with engine.begin() as conn:
 # Simple in-memory store of partial messages
 store = {}
 
-producer = KafkaProducer(bootstrap_servers=KAFKA_BOOTSTRAP.split(","), linger_ms=5)
+# Retry logic for Kafka connection
+max_retries = 10
+retry_delay = 5
 
-import uuid
-# use a unique group id per run so we read from earliest for testing/dev
-group = f"decision-engine-{uuid.uuid4().hex[:8]}"
-print("Starting kafka consumer with group:", group)
-consumer = KafkaConsumer(TOPIC_L1, TOPIC_L2, bootstrap_servers=KAFKA_BOOTSTRAP.split(","),
-                         auto_offset_reset='earliest', enable_auto_commit=True, group_id=group)
+producer = None
+consumer = None
+
+for attempt in range(max_retries):
+    try:
+        print(f"Connecting to Kafka (attempt {attempt + 1}/{max_retries})...")
+        producer = KafkaProducer(bootstrap_servers=KAFKA_BOOTSTRAP.split(","), linger_ms=5)
+        
+        import uuid
+        # use a unique group id per run so we read from earliest for testing/dev
+        group = f"decision-engine-{uuid.uuid4().hex[:8]}"
+        print("Starting kafka consumer with group:", group)
+        consumer = KafkaConsumer(TOPIC_L1, TOPIC_L2, bootstrap_servers=KAFKA_BOOTSTRAP.split(","),
+                                 auto_offset_reset='earliest', enable_auto_commit=True, group_id=group)
+        print("Successfully connected to Kafka")
+        break
+    except Exception as e:
+        print(f"Failed to connect to Kafka: {e}")
+        if attempt < max_retries - 1:
+            time.sleep(retry_delay)
+        else:
+            raise RuntimeError("Could not connect to Kafka after multiple attempts")
 
 print("Decision Engine started. Subscribed to:", TOPIC_L1, TOPIC_L2)
 
