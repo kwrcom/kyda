@@ -208,13 +208,23 @@ def main():
     transaction_count = 0
     fraud_count = 0
     
+    import requests
+    FAST_SCORER_URL = os.getenv("FAST_SCORER_URL", "http://fast-scorer:8001/score")
+
     try:
         while True:
             # Reason: Generate transaction
             transaction = generate_transaction()
             
-            # Reason: Send to Kafka
+            # Reason: Send to Kafka (Async Path)
             producer.send(KAFKA_TOPIC, value=transaction)
+
+            # Reason: Send to Fast Scorer (Sync/L1 Path)
+            try:
+                requests.post(FAST_SCORER_URL, json=transaction, timeout=0.5)
+            except Exception as e:
+                # print(f"Failed to call fast-scorer: {e}")
+                pass
             
             # Reason: Track statistics
             transaction_count += 1
