@@ -1,0 +1,11 @@
+# Reason: Python dependencies for transaction producer
+# Minimal set of packages for Kafka producer and data generation
+
+# Kafka client
+kafka-python==2.0.2
+
+# Fake data generation
+Faker==20.1.0
+
+# Utilities
+python-dotenv==1.0.0

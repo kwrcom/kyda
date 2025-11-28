@@ -1,0 +1,32 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Alert Details</title>
+  <style>body{font-family:Arial;padding:20px} pre{background:#f1f1f1;padding:12px}</style>
+</head>
+<body>
+  <a href="/">← Back</a>
+  <h1 id="title">Loading...</h1>
+  <div id="meta"></div>
+  <h3>Detection path</h3>
+  <pre id="path">-</pre>
+
+  <script>
+  const getArg = (name) => new URLSearchParams(window.location.search).get(name)
+  const tx = getArg('tx')
+  if(!tx) document.getElementById('title').textContent = 'missing txid'
+  
+  async function load(){
+    const res = await fetch('/api/alerts/' + encodeURIComponent(tx))
+    if(!res.ok){ document.getElementById('title').textContent = 'not found'; return }
+    const j = await res.json()
+    document.getElementById('title').textContent = `Transaction ${j.transaction_id}`
+    document.getElementById('meta').innerHTML = `<strong>Final verdict:</strong> ${j.final_verdict} <br/><strong>Reason:</strong> ${j.reason}`
+    document.getElementById('path').textContent = JSON.stringify(j.detection_path, null, 2)
+  }
+  load()
+  </script>
+</body>
+</html>

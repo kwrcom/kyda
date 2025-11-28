@@ -1,0 +1,42 @@
+# .gitignore for KYDA MLOps Infrastructure
+
+# Reason: Exclude environment-specific and sensitive files from version control
+
+# Environment files (may contain secrets)
+.env
+
+# Docker volumes data
+postgres-data/
+airflow-postgres-data/
+minio-data/
+redis-data/
+
+# Airflow logs (can be large)
+airflow/logs/*
+!airflow/logs/.gitignore
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+.docker/

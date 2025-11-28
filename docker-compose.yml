@@ -1,0 +1,578 @@
+version: '3.8'
+
+# Reason: Define shared network for all services to communicate
+# This allows services to reference each other by service name (DNS resolution)
+networks:
+  kyda-network:
+    driver: bridge
+
+# Reason: Define named volumes for persistent data storage
+# Ensures data survives container restarts and rebuilds
+volumes:
+  postgres-data:
+  airflow-postgres-data:
+  minio-data:
+  redis-data:
+  kafka-data:
+  spark-checkpoints:
+
+
+services:
+  # ============================================================================
+  # Core Infrastructure Services
+  # ============================================================================
+
+  # Reason: Reverse proxy for routing domains to services
+  # Handles SSL termination and HTTP routing based on domain names
+  traefik:
+    image: traefik:v2.10
+    container_name: traefik
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+    ports:
+      - "80:80"
+      - "8090:8080" # Traefik dashboard on different port to avoid conflict with Airflow
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - kyda-network
+    restart: unless-stopped
+
+  # Reason: Shared PostgreSQL database for MLflow experiment tracking
+  # Stores experiment metadata, parameters, metrics, and tags
+  postgres:
+    image: postgres:14
+    container_name: postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: mlflow
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - kyda-network
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Reason: S3-compatible object storage for MLflow artifacts
+  # Stores model files, plots, and other large experiment artifacts
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000" # S3 API
+      - "9001:9001" # MinIO Console UI
+    volumes:
+      - minio-data:/data
+    networks:
+      - kyda-network
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  # Reason: Initialize MinIO by creating the mlflow bucket
+  # MLflow requires the bucket to exist before it can store artifacts
+  minio-init:
+    image: minio/mc:latest
+    container_name: minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      - kyda-network
+    entrypoint: >
+      /bin/sh -c " mc alias set myminio http://minio:9000 minioadmin minioadmin; mc mb myminio/mlflow --ignore-existing; echo 'MinIO initialized successfully'; "
+
+  # ============================================================================
+  # MLflow Service
+  # ============================================================================
+
+  # Reason: MLflow tracking server for experiment management
+  # Provides UI and API for logging experiments, parameters, metrics, and artifacts
+  mlflow:
+    build:
+      context: ./mlflow
+      dockerfile: Dockerfile
+    container_name: mlflow
+    command: >
+      mlflow server --backend-store-uri postgresql://postgres:password@postgres:5432/mlflow --default-artifact-root s3://mlflow/ --host 0.0.0.0 --port 5000
+    environment:
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+    ports:
+      - "5000:5000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    networks:
+      - kyda-network
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.mlflow.rule=Host(`mlflow.kyda.tech`)"
+      - "traefik.http.routers.mlflow.entrypoints=web"
+      - "traefik.http.services.mlflow.loadbalancer.server.port=5000"
+
+  # ============================================================================
+  # Airflow Infrastructure Services
+  # ============================================================================
+
+  # Reason: Dedicated PostgreSQL for Airflow metadata
+  # Separates Airflow metadata from MLflow to avoid conflicts and improve isolation
+  airflow-postgres:
+    image: postgres:14
+    container_name: airflow-postgres
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow-postgres-data:/var/lib/postgresql/data
+    networks:
+      - kyda-network
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U airflow" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Reason: Redis broker for Airflow CeleryExecutor
+  # Manages task queues and worker coordination for distributed task execution
+  airflow-redis:
+    image: redis:7
+    container_name: airflow-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - kyda-network
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================================================
+  # Airflow Services
+  # ============================================================================
+
+  # Reason: Airflow webserver provides the web UI for DAG management
+  # Interface for monitoring, triggering, and managing workflow executions
+  airflow-webserver:
+    image: apache/airflow:2.8.1
+    container_name: airflow-webserver
+    command: >
+      bash -c " airflow db init && airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@kyda.tech || true && airflow webserver "
+    environment:
+      AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-postgres:5432/airflow
+      AIRFLOW__CELERY__BROKER_URL: redis://airflow-redis:6379/0
+      AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@airflow-postgres:5432/airflow
+      AIRFLOW__CORE__FERNET_KEY: 'ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2oasOM1Pg='
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
+      AIRFLOW__WEBSERVER__SECRET_KEY: 'airflow-secret-key'
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: root
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+      airflow-redis:
+        condition: service_healthy
+    networks:
+      - kyda-network
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.airflow.rule=Host(`airflow.kyda.tech`)"
+      - "traefik.http.routers.airflow.entrypoints=web"
+      - "traefik.http.services.airflow.loadbalancer.server.port=8080"
+
+  # Reason: Airflow scheduler evaluates DAGs and schedules tasks
+  # Core component that determines when tasks should run based on DAG definitions
+  airflow-scheduler:
+    image: apache/airflow:2.8.1
+    container_name: airflow-scheduler
+    command: airflow scheduler
+    environment:
+      AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-postgres:5432/airflow
+      AIRFLOW__CELERY__BROKER_URL: redis://airflow-redis:6379/0
+      AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@airflow-postgres:5432/airflow
+      AIRFLOW__CORE__FERNET_KEY: 'ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2oasOM1Pg='
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+      airflow-redis:
+        condition: service_healthy
+      airflow-webserver:
+        condition: service_started
+    networks:
+      - kyda-network
+    restart: unless-stopped
+
+  # Reason: Airflow worker executes tasks from the queue
+  # Celery worker that pulls tasks from Redis and executes them
+  airflow-worker:
+    image: apache/airflow:2.8.1
+    container_name: airflow-worker
+    command: airflow celery worker
+    environment:
+      AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-postgres:5432/airflow
+      AIRFLOW__CELERY__BROKER_URL: redis://airflow-redis:6379/0
+      AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@airflow-postgres:5432/airflow
+      AIRFLOW__CORE__FERNET_KEY: 'ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2oasOM1Pg='
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+      airflow-redis:
+        condition: service_healthy
+      airflow-webserver:
+        condition: service_started
+    networks:
+      - kyda-network
+    restart: unless-stopped
+
+  # Reason: Flower provides monitoring UI for Celery workers
+  # Real-time monitoring of worker status, task execution, and queue metrics
+  airflow-flower:
+    image: apache/airflow:2.8.1
+    container_name: airflow-flower
+    command: airflow celery flower
+    environment:
+      AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-postgres:5432/airflow
+      AIRFLOW__CELERY__BROKER_URL: redis://airflow-redis:6379/0
+      AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@airflow-postgres:5432/airflow
+      AIRFLOW__CORE__FERNET_KEY: 'ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2oasOM1Pg='
+    ports:
+      - "5555:5555"
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+      airflow-redis:
+        condition: service_healthy
+      airflow-worker:
+        condition: service_started
+    networks:
+      - kyda-network
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.flower.rule=Host(`flower.kyda.tech`)"
+      - "traefik.http.routers.flower.entrypoints=web"
+      - "traefik.http.services.flower.loadbalancer.server.port=5555"
+
+  # ============================================================================
+  # Kafka Infrastructure
+  # ============================================================================
+
+  # Reason: Zookeeper for Kafka cluster coordination
+  # Required for Kafka broker to manage topics and partitions
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - kyda-network
+    restart: unless-stopped
+
+  # Reason: Kafka broker for transaction streaming
+  # Handles real-time transaction data from producer to consumers
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "9093:9093"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      # Reason: Internal listener for Docker network communication
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      # Reason: Auto-create topics when producer sends first message
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+      # Reason: Retention policy (7 days)
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_LOG_RETENTION_BYTES: 1073741824
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    networks:
+      - kyda-network
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ============================================================================
+  # Backend API Service
+  # ============================================================================
+
+  # Reason: FastAPI backend with JWT authentication
+  # Provides REST API and WebSocket for fraud detection dashboard
+  backend:
+    build:
+      context: ./services/backend
+      dockerfile: Dockerfile
+    container_name: backend
+    environment:
+      # Reason: Kafka configuration (not secret)
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC: transactions
+      REDIS_URL: redis://airflow-redis:6379/0
+      # Reason: Vault connection details for retrieving secrets
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: root
+    ports:
+      - "8000:8000"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      vault-init:
+        condition: service_completed_successfully
+    networks:
+      - kyda-network
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.backend.rule=Host(`api.kyda.tech`)"
+      - "traefik.http.routers.backend.entrypoints=web"
+      - "traefik.http.services.backend.loadbalancer.server.port=8000"
+      # Rate limiting by source IP to protect the pre-ingest endpoint
+      - "traefik.http.middlewares.backend-ratelimit.ratelimit.average=50"
+      - "traefik.http.middlewares.backend-ratelimit.ratelimit.burst=100"
+      - "traefik.http.middlewares.backend-ratelimit.ratelimit.sourceCriterion=ip"
+      - "traefik.http.routers.backend.middlewares=backend-ratelimit@docker"
+
+  # ============================================================================
+  # Transaction Producer Service
+  # ============================================================================
+
+  # Reason: Transaction data generator
+  # Continuously generates realistic transaction data with fraud patterns
+  producer:
+    build:
+      context: ./services/producer
+      dockerfile: Dockerfile
+    container_name: producer
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC: transactions.raw
+      TRANSACTIONS_PER_SECOND: 10
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - kyda-network
+    restart: unless-stopped
+
+  # ============================================================================
+  # Spark Streaming Service
+  # ============================================================================
+
+  # Reason: Spark Structured Streaming for feature engineering
+  # Consumes raw transactions, calculates features, and outputs to preprocessed topic
+  spark-streaming:
+    build:
+      context: ./services/spark-streaming
+      dockerfile: Dockerfile
+    container_name: spark-streaming
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC_RAW: transactions.raw
+      KAFKA_TOPIC_PREPROCESSED: transactions.preprocessed
+      SPARK_CHECKPOINT_DIR: /opt/spark/checkpoints
+    volumes:
+      - spark-checkpoints:/opt/spark/checkpoints
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - kyda-network
+    restart: unless-stopped
+
+  spark-level2:
+    build:
+      context: ./services/spark-streaming
+      dockerfile: Dockerfile
+    container_name: spark-level2
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC_LEVEL2: transactions.level2
+      KAFKA_TOPIC_VERDICTS: level2.verdicts
+      SPARK_CHECKPOINT_DIR: /opt/spark/checkpoints/level2
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - kyda-network
+    restart: unless-stopped
+    command: [ "spark-submit", "--packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0", "--master", "local[*]", "level2_job.py" ]
+
+  # Decision Engine - reads level1.actions & level2.verdicts, writes manual_reviews
+  decision-engine:
+    build:
+      context: ./services/decision-engine
+      dockerfile: Dockerfile
+    container_name: decision-engine
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      POSTGRES_URL: postgresql://postgres:password@postgres:5432/mlflow
+      KAFKA_TOPIC_L1: level1.actions
+      KAFKA_TOPIC_L2: level2.verdicts
+      KAFKA_TOPIC_FINAL: final.decisions
+    depends_on:
+      - kafka
+      - postgres
+    networks:
+      - kyda-network
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./services/frontend
+      dockerfile: Dockerfile
+    container_name: frontend
+    environment:
+      - VITE_BACKEND_URL=http://backend:8000
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+    networks:
+      - kyda-network
+    restart: unless-stopped
+
+  # ============================================================================
+  # Fast Scorer (Level 1)
+  # Lightweight, low-latency scoring service that reads hot features from Redis
+  fast-scorer:
+    build:
+      context: ./services/fast-scorer
+      dockerfile: Dockerfile
+    container_name: fast-scorer
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      REDIS_URL: redis://airflow-redis:6379/0
+      # expose ONNX_MODEL_PATH if you place a model in the image
+      ONNX_MODEL_PATH: /app/model.onnx
+    ports:
+      - "8001:8001"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      airflow-redis:
+        condition: service_healthy
+    networks:
+      - kyda-network
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.fast-scorer.rule=Host(`fast-scorer.kyda.tech`)"
+      - "traefik.http.routers.fast-scorer.entrypoints=web"
+      - "traefik.http.services.fast-scorer.loadbalancer.server.port=8001"
+
+  # ============================================================================
+  # HashiCorp Vault for Secret Management
+  # ============================================================================
+
+  # Reason: HashiCorp Vault for centralized secrets management
+  # Running in dev mode with in-memory storage (not for production!)
+  vault:
+    image: hashicorp/vault:latest
+    container_name: vault
+    ports:
+      - "8200:8200"
+    environment:
+      # Reason: Dev mode enables in-memory storage and auto-unsealing
+      VAULT_DEV_ROOT_TOKEN_ID: root
+      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+    cap_add:
+      # Reason: IPC_LOCK prevents memory from being swapped to disk (security)
+      - IPC_LOCK
+    networks:
+      - kyda-network
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "vault", "status" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    command: server -dev -dev-root-token-id=root
+
+  # Reason: Initialize Vault with secrets and policies
+  # Sets up KV secrets and access policies for backend and airflow services
+  vault-init:
+    image: hashicorp/vault:latest
+    container_name: vault-init
+    depends_on:
+      vault:
+        condition: service_healthy
+    networks:
+      - kyda-network
+    entrypoint: >
+      /bin/sh -c " export VAULT_ADDR=http://vault:8200 && export VAULT_TOKEN=root && echo 'Waiting for Vault to be ready...' && sleep 2 && echo 'Enabling KV v2 secrets engine...' && vault secrets enable -path=secret kv-v2 || true && echo 'Storing backend secrets...' && vault kv put secret/backend 
+        postgres_user=postgres 
+        postgres_password=password 
+        postgres_db=mlflow 
+        minio_access_key=minioadmin 
+        minio_secret_key=minioadmin 
+        jwt_algorithm=RS256 &&
+      echo 'Storing Airflow secrets...' && vault kv put secret/airflow 
+        postgres_user=airflow 
+        postgres_password=airflow 
+        postgres_db=airflow 
+        fernet_key=ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2oasOM1Pg= 
+        webserver_secret_key=airflow-secret-key 
+        minio_access_key=minioadmin 
+        minio_secret_key=minioadmin &&
+      echo 'Creating backend-policy...' && echo 'path \"secret/data/backend\" { capabilities = [\"read\"] }' | vault policy write backend-policy - && echo 'Creating airflow-policy...' && echo 'path \"secret/data/airflow\" { capabilities = [\"read\"] }' | vault policy write airflow-policy - && echo 'Vault initialization completed successfully!' && vault kv get secret/backend && vault kv get secret/airflow "

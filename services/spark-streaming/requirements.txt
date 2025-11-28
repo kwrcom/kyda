@@ -1,0 +1,17 @@
+# Reason: Python dependencies for Spark Streaming application
+# PySpark is included in the bitnami/spark image, but we need additional packages
+
+# No additional Python packages needed for basic Spark Streaming
+# The Spark image includes all necessary dependencies
+
+# If you need additional packages in the future, add them here
+# For example:
+# kafka-python==2.0.2
+# pandas==2.0.0
+
+# For local development / unit testing you can install pyspark
+# Note: the containerized Spark image already includes the runtime.
+pyspark==3.5.0
+# Kafka and Redis clients are used by the streaming job for side-effects (writing hot features / producing to extra topics)
+kafka-python==2.0.2
+redis==4.6.0

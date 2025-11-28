@@ -1,0 +1,61 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>KYDA Operator Dashboard (Light)</title>
+  <style>
+    body{font-family: Arial, sans-serif; padding:20px}
+    table{border-collapse: collapse; width: 100%;}
+    th, td{border:1px solid #ddd; padding:8px}
+    th{background:#f3f3f3}
+    .filter{margin-bottom:12px}
+    a{color: #0077cc}
+  </style>
+</head>
+<body>
+  <h1>KYDA Operator Dashboard — Alerts</h1>
+
+  <div class="filter">
+    Filter: <select id="levelFilter">
+      <option value="all">All</option>
+      <option value="0">Level 0</option>
+      <option value="1">Level 1</option>
+      <option value="2">Level 2</option>
+    </select>
+  </div>
+
+  <div id="tableArea">Loading...</div>
+
+<script>
+const base = 'http://localhost:8000/api'
+async function loadAlerts(){
+  const res = await fetch(base + '/alerts/')
+  const j = await res.json()
+  const rows = j.alerts || []
+  renderTable(rows)
+}
+
+function renderTable(rows){
+  const filter = document.getElementById('levelFilter').value
+  let filtered = rows
+  if(filter !== 'all') filtered = rows.filter(r => r.detection_level === Number(filter))
+
+  if(filtered.length === 0){
+    document.getElementById('tableArea').innerHTML = '<div>No alerts</div>'
+    return
+  }
+
+  let html = '<table><thead><tr><th>ID</th><th>Transaction</th><th>Verdict</th><th>Detection Level</th><th>Reason</th><th>Detail</th></tr></thead><tbody>'
+  for(const r of filtered){
+    html += `<tr><td>${r.id}</td><td>${r.transaction_id}</td><td>${r.final_verdict}</td><td>${r.detection_level}</td><td>${r.reason}</td><td><a href="details.html?tx=${encodeURIComponent(r.transaction_id)}">View</a></td></tr>`
+  }
+  html += '</tbody></table>'
+  document.getElementById('tableArea').innerHTML = html
+}
+
+document.getElementById('levelFilter').addEventListener('change', loadAlerts)
+loadAlerts()
+</script>
+</body>
+</html>

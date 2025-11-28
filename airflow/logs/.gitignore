@@ -1,0 +1,5 @@
+# Airflow Logs
+# Reason: This directory stores execution logs for Airflow tasks
+# It is automatically populated by Airflow during task execution
+*
+!.gitignore

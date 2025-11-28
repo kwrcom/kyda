@@ -1,0 +1,29 @@
+# Reason: Exclude sensitive and unnecessary files from Docker build
+# Reduces image size and prevents secrets from being included
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Keys (will be generated in container)
+keys/
+
+# Environment files
+.env
+
+# Testing
+.pytest_cache/
+*.coverage
