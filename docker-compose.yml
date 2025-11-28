@@ -536,6 +536,8 @@ services:
       # Reason: Dev mode enables in-memory storage and auto-unsealing
       VAULT_DEV_ROOT_TOKEN_ID: root
       VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+      # Reason: Explicitly set address for local CLI commands (healthcheck)
+      VAULT_ADDR: http://127.0.0.1:8200
     cap_add:
       # Reason: IPC_LOCK prevents memory from being swapped to disk (security)
       - IPC_LOCK
