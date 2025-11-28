@@ -562,19 +562,4 @@ services:
     networks:
       - kyda-network
     entrypoint: >
-      /bin/sh -c " export VAULT_ADDR=http://vault:8200 && export VAULT_TOKEN=root && echo 'Waiting for Vault to be ready...' && sleep 2 && echo 'Enabling KV v2 secrets engine...' && vault secrets enable -path=secret kv-v2 || true && echo 'Storing backend secrets...' && vault kv put secret/backend 
-        postgres_user=postgres 
-        postgres_password=password 
-        postgres_db=mlflow 
-        minio_access_key=minioadmin 
-        minio_secret_key=minioadmin 
-        jwt_algorithm=RS256 &&
-      echo 'Storing Airflow secrets...' && vault kv put secret/airflow 
-        postgres_user=airflow 
-        postgres_password=airflow 
-        postgres_db=airflow 
-        fernet_key=ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2oasOM1Pg= 
-        webserver_secret_key=airflow-secret-key 
-        minio_access_key=minioadmin 
-        minio_secret_key=minioadmin &&
-      echo 'Creating backend-policy...' && echo 'path \"secret/data/backend\" { capabilities = [\"read\"] }' | vault policy write backend-policy - && echo 'Creating airflow-policy...' && echo 'path \"secret/data/airflow\" { capabilities = [\"read\"] }' | vault policy write airflow-policy - && echo 'Vault initialization completed successfully!' && vault kv get secret/backend && vault kv get secret/airflow "
+      /bin/sh -c " export VAULT_ADDR=http://vault:8200 && export VAULT_TOKEN=root && echo 'Waiting for Vault to be ready...' && sleep 5 && echo 'Enabling KV v2 secrets engine...' && vault secrets enable -path=secret kv-v2 || true && echo 'Storing backend secrets...' && vault kv put secret/backend postgres_user=postgres postgres_password=password postgres_db=mlflow minio_access_key=minioadmin minio_secret_key=minioadmin jwt_algorithm=RS256 && echo 'Storing Airflow secrets...' && vault kv put secret/airflow postgres_user=airflow postgres_password=airflow postgres_db=airflow fernet_key=ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2oasOM1Pg= webserver_secret_key=airflow-secret-key minio_access_key=minioadmin minio_secret_key=minioadmin && echo 'Creating backend-policy...' && echo 'path \"secret/data/backend\" { capabilities = [\"read\"] }' | vault policy write backend-policy - && echo 'Creating airflow-policy...' && echo 'path \"secret/data/airflow\" { capabilities = [\"read\"] }' | vault policy write airflow-policy - && echo 'Vault initialization completed successfully!' && vault kv get secret/backend && vault kv get secret/airflow "
